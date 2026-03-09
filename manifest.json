@@ -1,0 +1,9 @@
+{
+  "name": "Basalt",
+  "id": "basalt-plugin",
+  "api": "1.0.0",
+  "main": "dist/plugin.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "permissions": ["currentuser"]
+}

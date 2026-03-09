@@ -1,0 +1,134 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+}
+
+.app-root {
+  min-height: 100vh;
+  padding: 16px 20px 20px;
+  background: #0b0b0b;
+  color: #f9fafb;
+  box-sizing: border-box;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.app-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: radial-gradient(circle at 30% 20%, #fed7aa, #ea580c 45%, #7c2d12 85%);
+}
+
+.app-header h2 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.app-header p {
+  margin: 0;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.field-label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #27272a;
+  background: #09090b;
+  color: #f9fafb;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+.field-input::placeholder {
+  color: #4b5563;
+}
+
+.field-input:focus {
+  outline: 1px solid #f97316;
+  border-color: #f97316;
+}
+
+.toggle-group {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.toggle-button {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 6px;
+  border: 1px solid #27272a;
+  background: #020617;
+  color: #9ca3af;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.toggle-button--active {
+  background: #f97316;
+  color: #020617;
+  border-color: #f97316;
+}
+
+.toggle-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.primary-button {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 0;
+  border-radius: 8px;
+  border: none;
+  background: #f97316;
+  color: #111827;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.status {
+  margin-top: 10px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status--success {
+  color: #4ade80;
+}
+
+.status--error {
+  color: #f97373;
+}

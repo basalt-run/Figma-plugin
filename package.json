@@ -1,0 +1,22 @@
+{
+  "name": "basalt-figma-plugin",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:ui": "vite build",
+    "build:plugin": "node build.mjs",
+    "dev": "vite",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.96.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "esbuild": "^0.20.0",
+    "fs-extra": "^11.2.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0",
+    "vite-plugin-singlefile": "^0.13.5"
+  }
+}
