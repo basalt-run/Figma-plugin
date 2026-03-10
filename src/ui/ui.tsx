@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import './ui.css'
 
@@ -13,69 +13,95 @@ declare global {
 }
 
 function App() {
-  const [apiKey, setApiKey] = useState('')
-  const [repo, setRepo] = useState('')
-  const [filePath, setFilePath] = useState('tokens/figma-import.json')
+  const apiKeyRef = useRef<HTMLInputElement>(null)
+  const repoRef = useRef<HTMLInputElement>(null)
+  const filePathRef = useRef<HTMLInputElement>(null)
   const [mergeStrategy, setMergeStrategy] = useState<MergeStrategy>('merge')
   const [status, setStatus] = useState<Status>('idle')
   const [message, setMessage] = useState('')
 
   useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      const el = e.target as HTMLElement
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        (el as HTMLInputElement).focus()
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [])
+
+  useEffect(() => {
     parent.postMessage({ pluginMessage: { type: 'load-prefs' } }, '*')
 
-    window.onmessage = async (event: MessageEvent) => {
+    const handleMessage = async (event: MessageEvent) => {
       const msg = (event.data as any).pluginMessage
       if (!msg) return
 
       if (msg.type === 'prefs') {
-        if (msg.apiKey) setApiKey(msg.apiKey)
-        if (msg.repo) setRepo(msg.repo)
-        if (msg.filePath) setFilePath(msg.filePath)
+        if (apiKeyRef.current) apiKeyRef.current.value = msg.apiKey ?? ''
+        if (repoRef.current) repoRef.current.value = msg.repo ?? ''
+        if (filePathRef.current) filePathRef.current.value = msg.filePath ?? 'tokens/figma-import.json'
       }
 
-      if (msg.type === 'tokens') {
+      if (msg.type === 'do-export') {
+        const { tokens, apiKey, repo, filePath, mergeStrategy: strategy, commitMessage } = msg
+        setStatus('loading')
         try {
-          const res = await fetch('https://www.basalt.run/api/figma/plugin-import', {
+          const res = await fetch('https://basalt.run/api/figma/plugin-import', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${apiKey}`,
             },
-            body: JSON.stringify({
-              tokens: msg.data,
-              repo,
-              filePath,
-              mergeStrategy,
-              commitMessage: 'feat(tokens): import from Figma plugin',
-            }),
+            body: JSON.stringify({ tokens, repo, filePath, mergeStrategy: strategy, commitMessage }),
           })
-
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}))
-            throw new Error(err.message ?? 'Import failed')
-          }
-
-          const result = await res.json().catch(() => ({}))
-          setStatus('success')
-          if (result?.tokenCount != null) {
-            setMessage(`${result.tokenCount} tokens written to ${repo}/${filePath}`)
+          const data = await res.json().catch(() => ({}))
+          if (res.ok) {
+            setStatus('success')
+            if (data?.tokenCount != null) {
+              setMessage(`${data.tokenCount} tokens written to ${repo}/${filePath}`)
+            } else {
+              setMessage(`Tokens written to ${repo}/${filePath}`)
+            }
           } else {
-            setMessage(`Tokens written to ${repo}/${filePath}`)
+            setStatus('error')
+            const raw = data?.error ?? data?.message
+            const errMsg = typeof raw === 'string' ? raw : raw != null ? JSON.stringify(raw) : `Export failed (${res.status})`
+            if (res.status === 500 && errMsg.includes('Not Found')) {
+              setMessage(`Repo not found. Create "${repo}" on GitHub first, then export again.`)
+            } else {
+              setMessage(errMsg)
+            }
           }
-        } catch (err: any) {
+        } catch (err) {
           setStatus('error')
-          setMessage(err?.message ?? 'Something went wrong')
+          setMessage(err instanceof Error ? err.message : 'Failed to fetch')
         }
       }
     }
-  }, [apiKey, repo, filePath, mergeStrategy])
+
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [])
 
   const handleExport = () => {
-    if (!apiKey || !repo || !filePath) return
+    const key = apiKeyRef.current?.value ?? ''
+    const repo = repoRef.current?.value ?? ''
+    const path = filePathRef.current?.value ?? ''
+    if (!key || !repo || !path) return
     setStatus('loading')
     setMessage('')
-    parent.postMessage({ pluginMessage: { type: 'save-prefs', apiKey, repo, filePath } }, '*')
-    parent.postMessage({ pluginMessage: { type: 'export' } }, '*')
+    parent.postMessage({ pluginMessage: { type: 'save-prefs', apiKey: key, repo, filePath: path } }, '*')
+    parent.postMessage({
+      pluginMessage: {
+        type: 'export',
+        apiKey: key,
+        repo,
+        filePath: path,
+        mergeStrategy,
+      },
+    }, '*')
   }
 
   return (
@@ -90,27 +116,36 @@ function App() {
 
       <label className="field-label">Basalt API Key</label>
       <input
+        ref={apiKeyRef}
         type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
+        defaultValue=""
         placeholder="bsk_..."
         className="field-input"
+        tabIndex={1}
+        onFocus={(e) => e.target.select()}
       />
 
       <label className="field-label">GitHub Repo</label>
       <input
-        value={repo}
-        onChange={(e) => setRepo(e.target.value)}
+        ref={repoRef}
+        type="text"
+        defaultValue=""
         placeholder="owner/repo"
         className="field-input"
+        tabIndex={2}
+        onFocus={(e) => e.target.select()}
       />
+      <p className="field-hint">Must be an existing GitHub repo in owner/repo format.</p>
 
       <label className="field-label">File Path</label>
       <input
-        value={filePath}
-        onChange={(e) => setFilePath(e.target.value)}
+        ref={filePathRef}
+        type="text"
+        defaultValue="tokens/figma-import.json"
         placeholder="tokens/figma-import.json"
         className="field-input"
+        tabIndex={3}
+        onFocus={(e) => e.target.select()}
       />
 
       <label className="field-label">Import Mode</label>
@@ -132,7 +167,7 @@ function App() {
       <button
         type="button"
         onClick={handleExport}
-        disabled={!apiKey || !repo || !filePath || status === 'loading'}
+        disabled={status === 'loading'}
         className="primary-button"
       >
         {status === 'loading' ? 'Exporting…' : 'Export tokens'}
@@ -145,7 +180,8 @@ function App() {
       )}
       {status === 'error' && (
         <p className="status status--error">
-          <span>✗</span> {message}
+          <span>✗</span>{' '}
+          {typeof message === 'string' ? message : JSON.stringify(message)}
         </p>
       )}
     </div>

@@ -5,5 +5,9 @@
   "main": "dist/plugin.js",
   "ui": "dist/ui.html",
   "editorType": ["figma"],
-  "permissions": ["currentuser"]
+  "permissions": ["currentuser"],
+  "networkAccess": {
+    "allowedDomains": ["https://basalt.run"],
+    "reasoning": "Plugin exports design tokens to Basalt API at basalt.run."
+  }
 }

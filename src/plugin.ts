@@ -17,49 +17,50 @@ figma.ui.onmessage = async (msg) => {
   }
 
   if (msg.type === 'export') {
-    const collections = figma.variables.getLocalVariableCollections()
-    const variables = figma.variables.getLocalVariables()
+    const { apiKey, repo, filePath, mergeStrategy, commitMessage } = msg
 
-    const varMap = new Map(variables.map((v) => [v.id, v]))
+    const collections = figma.variables.getLocalVariableCollections()
     const output: Record<string, unknown> = {}
 
     for (const collection of collections) {
       for (const variableId of collection.variableIds) {
-        const variable = varMap.get(variableId)
+        const variable = figma.variables.getVariableById(variableId)
         if (!variable) continue
 
-        const modeId = collection.defaultModeId
-        const rawValue = variable.valuesByMode[modeId]
+        const mode = collection.modes[0]
+        const raw = variable.valuesByMode[mode.modeId]
 
-        let value: string | number | undefined
-        let type: string
+        let value: unknown = raw
+        let type = 'unknown'
 
-        if (variable.resolvedType === 'COLOR') {
-          const c = rawValue as RGBA
-          value = rgbaToHex(c)
+        if (variable.resolvedType === 'COLOR' && typeof raw === 'object' && raw !== null && 'r' in raw) {
+          value = rgbaToHex(raw as RGBA)
           type = 'color'
         } else if (variable.resolvedType === 'FLOAT') {
-          value = `${rawValue}px`
+          value = `${raw}px`
           type = 'dimension'
         } else if (variable.resolvedType === 'STRING') {
-          value = rawValue as string
+          value = raw
           type = 'fontFamily'
         } else if (variable.resolvedType === 'BOOLEAN') {
-          continue
-        } else {
-          continue
+          value = raw
+          type = 'boolean'
         }
 
-        const path = variable.name
-          .replace(/\//g, '.')
-          .toLowerCase()
-          .replace(/\s+/g, '-')
-
-        setNested(output, path, { $value: value, $type: type })
+        const path = variable.name.replace(/\//g, '.')
+        setNested(output, path, { $type: type, $value: value })
       }
     }
 
-    figma.ui.postMessage({ type: 'tokens', data: output })
+    figma.ui.postMessage({
+      type: 'do-export',
+      tokens: output,
+      apiKey,
+      repo,
+      filePath,
+      mergeStrategy,
+      commitMessage,
+    })
   }
 
   if (msg.type === 'close') {

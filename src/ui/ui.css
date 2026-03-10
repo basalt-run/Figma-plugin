@@ -51,6 +51,18 @@ body {
   color: #6b7280;
 }
 
+input {
+  pointer-events: all !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.field-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #78716c;
+}
+
 .field-input {
   width: 100%;
   box-sizing: border-box;
