@@ -23,29 +23,17 @@ figma.ui.onmessage = async (msg) => {
     const output: Record<string, unknown> = {}
 
     for (const collection of collections) {
+      const mode = collection.modes[0]
+      if (!mode) continue
+
       for (const variableId of collection.variableIds) {
         const variable = figma.variables.getVariableById(variableId)
         if (!variable) continue
 
-        const mode = collection.modes[0]
         const raw = variable.valuesByMode[mode.modeId]
 
-        let value: unknown = raw
-        let type = 'unknown'
-
-        if (variable.resolvedType === 'COLOR' && typeof raw === 'object' && raw !== null && 'r' in raw) {
-          value = rgbaToHex(raw as RGBA)
-          type = 'color'
-        } else if (variable.resolvedType === 'FLOAT') {
-          value = `${raw}px`
-          type = 'dimension'
-        } else if (variable.resolvedType === 'STRING') {
-          value = raw
-          type = 'fontFamily'
-        } else if (variable.resolvedType === 'BOOLEAN') {
-          value = raw
-          type = 'boolean'
-        }
+        const { value, type } = resolveValue(raw, variable.resolvedType, collections, new Set())
+        if (value === null) continue
 
         const path = variable.name.replace(/\//g, '.')
         setNested(output, path, { $type: type, $value: value })
@@ -68,6 +56,51 @@ figma.ui.onmessage = async (msg) => {
   }
 }
 
+function resolveValue(
+  raw: VariableValue,
+  resolvedType: VariableResolvedDataType,
+  collections: VariableCollection[],
+  visited: Set<string>,
+): { value: unknown; type: string } {
+  if (
+    raw !== null &&
+    typeof raw === 'object' &&
+    'type' in raw &&
+    (raw as { type: string }).type === 'VARIABLE_ALIAS'
+  ) {
+    const aliasId = (raw as { id: string }).id
+    if (visited.has(aliasId)) return { value: null, type: 'unknown' }
+    visited.add(aliasId)
+
+    const referencedVar = figma.variables.getVariableById(aliasId)
+    if (referencedVar) {
+      const refCollection = collections.find(c =>
+        c.variableIds.includes(referencedVar.id),
+      )
+      const refMode = refCollection?.modes[0]
+      if (refMode) {
+        const refRaw = referencedVar.valuesByMode[refMode.modeId]
+        return resolveValue(refRaw, referencedVar.resolvedType, collections, visited)
+      }
+    }
+    return { value: null, type: 'unknown' }
+  }
+
+  if (resolvedType === 'COLOR' && typeof raw === 'object' && raw !== null && 'r' in raw) {
+    return { value: rgbaToHex(raw as RGBA), type: 'color' }
+  }
+  if (resolvedType === 'FLOAT') {
+    return { value: `${raw}px`, type: 'dimension' }
+  }
+  if (resolvedType === 'STRING') {
+    return { value: raw, type: 'fontFamily' }
+  }
+  if (resolvedType === 'BOOLEAN') {
+    return { value: raw, type: 'boolean' }
+  }
+  return { value: raw, type: 'unknown' }
+}
+
 function rgbaToHex({ r, g, b, a }: RGBA): string {
   const toHex = (n: number) =>
     Math.round(n * 255)
@@ -82,10 +115,14 @@ function setNested(
   path: string,
   value: unknown
 ): void {
-  const parts = path.split('.')
+  const parts = path.split('.').filter(Boolean)
+  if (parts.length === 0) return
   let current = obj
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!current[parts[i]]) current[parts[i]] = {}
+    const existing = current[parts[i]]
+    if (!existing || typeof existing !== 'object' || '$value' in (existing as Record<string, unknown>)) {
+      current[parts[i]] = {}
+    }
     current = current[parts[i]] as Record<string, unknown>
   }
   current[parts[parts.length - 1]] = value
