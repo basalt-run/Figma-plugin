@@ -3,14 +3,28 @@ import ReactDOM from 'react-dom/client'
 import './ui.css'
 
 type MergeStrategy = 'merge' | 'overwrite'
+type Status = 'idle' | 'scanning' | 'loading' | 'success' | 'error'
 
-type Status = 'idle' | 'loading' | 'success' | 'error'
+interface ScanResult {
+  tokenCount: number
+  colorCount: number
+  dimensionCount: number
+  componentCount: number
+  variantCount: number
+  iconCount: number
+  shadowCount: number
+  typographyCount: number
+  components: { name: string; variantCount: number }[]
+  icons: string[]
+}
 
 declare global {
   interface Window {
     onmessage: ((event: MessageEvent) => void) | null
   }
 }
+
+const DEFAULT_ENDPOINT = 'https://basalt.run/api/figma/plugin/export'
 
 function App() {
   const apiKeyRef = useRef<HTMLInputElement>(null)
@@ -19,6 +33,13 @@ function App() {
   const [mergeStrategy, setMergeStrategy] = useState<MergeStrategy>('merge')
   const [status, setStatus] = useState<Status>('idle')
   const [message, setMessage] = useState('')
+  const [scan, setScan] = useState<ScanResult | null>(null)
+  const [showComponents, setShowComponents] = useState(false)
+  const [showIcons, setShowIcons] = useState(false)
+  const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT)
+  const [showSettings, setShowSettings] = useState(false)
+  const endpointUrlRef = useRef(endpointUrl)
+  endpointUrlRef.current = endpointUrl
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -31,9 +52,24 @@ function App() {
     return () => document.removeEventListener('click', handleClick)
   }, [])
 
+  // Load prefs once on mount
   useEffect(() => {
     parent.postMessage({ pluginMessage: { type: 'load-prefs' } }, '*')
+    parent.postMessage({ pluginMessage: { type: 'scan' } }, '*')
+  }, [])
 
+  // Timeout fallback — if loading for >90s, show error so user isn't stuck
+  useEffect(() => {
+    if (status !== 'loading') return
+    const t = setTimeout(() => {
+      setStatus('error')
+      setMessage('Export timed out. Try again with fewer components, or check your network connection.')
+    }, 90000)
+    return () => clearTimeout(t)
+  }, [status])
+
+  // Message handler — stable listener, reads endpointUrl from ref
+  useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       const msg = (event.data as any).pluginMessage
       if (!msg) return
@@ -42,27 +78,66 @@ function App() {
         if (apiKeyRef.current) apiKeyRef.current.value = msg.apiKey ?? ''
         if (repoRef.current) repoRef.current.value = msg.repo ?? ''
         if (filePathRef.current) filePathRef.current.value = msg.filePath ?? 'tokens/figma-import.json'
+        if (msg.endpointUrl) setEndpointUrl(msg.endpointUrl)
+      }
+
+      if (msg.type === 'scan-result') {
+        setScan(msg as ScanResult)
+      }
+
+      if (msg.type === 'export-error') {
+        setStatus('error')
+        setMessage(msg.error ?? 'Export failed')
+        return
       }
 
       if (msg.type === 'do-export') {
-        const { tokens, apiKey, repo, filePath, mergeStrategy: strategy, commitMessage } = msg
+        const {
+          tokens, components, icons, shadows, typography, metadata,
+          apiKey, repo, filePath, mergeStrategy: strategy, commitMessage,
+        } = msg
         setStatus('loading')
+
+        const payload = {
+          tokens,
+          components,
+          icons,
+          shadows,
+          typography,
+          metadata,
+          repo,
+          filePath,
+          mergeStrategy: strategy,
+          commitMessage,
+          summary: {
+            totalTokens: scan?.tokenCount ?? 0,
+            totalComponents: components?.length ?? 0,
+            totalVariants: components?.reduce((s: number, c: any) => s + (c.variants?.length ?? 0), 0) ?? 0,
+            totalIcons: icons?.length ?? 0,
+            generatedAt: metadata?.exportedAt,
+          },
+        }
+
         try {
-          const res = await fetch('https://basalt.run/api/figma/plugin-import', {
+          const res = await fetch(endpointUrlRef.current, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${apiKey}`,
             },
-            body: JSON.stringify({ tokens, repo, filePath, mergeStrategy: strategy, commitMessage }),
+            body: JSON.stringify(payload),
           })
           const data = await res.json().catch(() => ({}))
           if (res.ok) {
             setStatus('success')
-            if (data?.tokenCount != null) {
-              setMessage(`${data.tokenCount} tokens written to ${repo}/${filePath}`)
+            const imp = data?.imported
+            if (imp) {
+              const thumbs = imp.thumbnails ?? 0
+              setMessage(
+                `${imp.tokens ?? 0} tokens, ${imp.components ?? 0} components, ${imp.variants ?? 0} variants, ${imp.icons ?? 0} icons${thumbs > 0 ? `, ${thumbs} thumbnails` : ''} exported`,
+              )
             } else {
-              setMessage(`Tokens written to ${repo}/${filePath}`)
+              setMessage('Design system exported successfully')
             }
           } else {
             setStatus('error')
@@ -83,7 +158,7 @@ function App() {
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [])
+  }, [scan?.tokenCount])
 
   const handleExport = () => {
     const key = apiKeyRef.current?.value ?? ''
@@ -92,7 +167,7 @@ function App() {
     if (!key || !repo || !path) return
     setStatus('loading')
     setMessage('')
-    parent.postMessage({ pluginMessage: { type: 'save-prefs', apiKey: key, repo, filePath: path } }, '*')
+    parent.postMessage({ pluginMessage: { type: 'save-prefs', apiKey: key, repo, filePath: path, endpointUrl } }, '*')
     parent.postMessage({
       pluginMessage: {
         type: 'export',
@@ -104,16 +179,104 @@ function App() {
     }, '*')
   }
 
+  const handleRescan = () => {
+    setScan(null)
+    parent.postMessage({ pluginMessage: { type: 'scan' } }, '*')
+  }
+
+  const totalItems = (scan?.tokenCount ?? 0) + (scan?.componentCount ?? 0) + (scan?.iconCount ?? 0)
+
   return (
     <div className="app-root">
       <div className="app-header">
         <div className="app-icon" />
         <div>
           <h2>Basalt</h2>
-          <p>Export variables to your design system repo</p>
+          <p>Export design system to Git</p>
         </div>
       </div>
 
+      {/* Analysis section */}
+      {scan ? (
+        <div className="analysis-section">
+          <div className="analysis-header">
+            <span className="analysis-title">Analysis</span>
+            <button type="button" className="rescan-button" onClick={handleRescan}>
+              Rescan
+            </button>
+          </div>
+
+          <div className="analysis-grid">
+            <div className="analysis-item">
+              <span className="analysis-count">{scan.tokenCount}</span>
+              <span className="analysis-label">Tokens</span>
+              <span className="analysis-detail">{scan.colorCount} color, {scan.dimensionCount} dimension</span>
+            </div>
+            <div className="analysis-item">
+              <span className="analysis-count">{scan.componentCount}</span>
+              <span className="analysis-label">Components</span>
+              <span className="analysis-detail">{scan.variantCount} variants</span>
+            </div>
+            <div className="analysis-item">
+              <span className="analysis-count">{scan.iconCount}</span>
+              <span className="analysis-label">Icons</span>
+            </div>
+            <div className="analysis-item">
+              <span className="analysis-count">{scan.shadowCount + scan.typographyCount}</span>
+              <span className="analysis-label">Styles</span>
+              <span className="analysis-detail">{scan.shadowCount} shadow, {scan.typographyCount} type</span>
+            </div>
+          </div>
+
+          {scan.components.length > 0 && (
+            <div className="analysis-list">
+              <button
+                type="button"
+                className="analysis-list-toggle"
+                onClick={() => setShowComponents(!showComponents)}
+              >
+                {showComponents ? '▾' : '▸'} Components ({scan.components.length})
+              </button>
+              {showComponents && (
+                <ul className="analysis-list-items">
+                  {scan.components.map((c) => (
+                    <li key={c.name}>
+                      {c.name} <span className="muted">({c.variantCount} variants)</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {scan.icons.length > 0 && (
+            <div className="analysis-list">
+              <button
+                type="button"
+                className="analysis-list-toggle"
+                onClick={() => setShowIcons(!showIcons)}
+              >
+                {showIcons ? '▾' : '▸'} Icons ({scan.icons.length})
+              </button>
+              {showIcons && (
+                <ul className="analysis-list-items">
+                  {scan.icons.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="analysis-section">
+          <p className="muted" style={{ textAlign: 'center', fontSize: 11, margin: '12px 0' }}>
+            Scanning document...
+          </p>
+        </div>
+      )}
+
+      {/* Settings */}
       <label className="field-label">Basalt API Key</label>
       <input
         ref={apiKeyRef}
@@ -135,9 +298,8 @@ function App() {
         tabIndex={2}
         onFocus={(e) => e.target.select()}
       />
-      <p className="field-hint">Must be an existing GitHub repo in owner/repo format.</p>
 
-      <label className="field-label">File Path</label>
+      <label className="field-label">Token File Path</label>
       <input
         ref={filePathRef}
         type="text"
@@ -164,23 +326,86 @@ function App() {
         ))}
       </div>
 
+      {/* Advanced settings */}
+      <div className="settings-section">
+        <button
+          type="button"
+          className="settings-toggle"
+          onClick={() => setShowSettings(!showSettings)}
+        >
+          {showSettings ? '▾' : '▸'} Advanced
+          {endpointUrl !== DEFAULT_ENDPOINT && (
+            <span className="settings-badge">custom endpoint</span>
+          )}
+        </button>
+        {showSettings && (
+          <div className="settings-body">
+            <label className="field-label" style={{ marginTop: 6 }}>Basalt Endpoint URL</label>
+            <input
+              type="text"
+              value={endpointUrl}
+              onChange={(e) => setEndpointUrl(e.target.value)}
+              onBlur={() => {
+                parent.postMessage({
+                  pluginMessage: { type: 'save-prefs', apiKey: apiKeyRef.current?.value, repo: repoRef.current?.value, filePath: filePathRef.current?.value, endpointUrl },
+                }, '*')
+              }}
+              placeholder={DEFAULT_ENDPOINT}
+              className="field-input"
+              tabIndex={4}
+              onFocus={(e) => e.target.select()}
+            />
+            <p className="field-hint">
+              Default: basalt.run. Use http://localhost:3001/api/figma/plugin/export for local dev.
+            </p>
+            {endpointUrl !== DEFAULT_ENDPOINT && (
+              <button
+                type="button"
+                className="rescan-button"
+                style={{ marginTop: 6 }}
+                onClick={() => {
+                  setEndpointUrl(DEFAULT_ENDPOINT)
+                  parent.postMessage({
+                    pluginMessage: { type: 'save-prefs', apiKey: apiKeyRef.current?.value, repo: repoRef.current?.value, filePath: filePathRef.current?.value, endpointUrl: DEFAULT_ENDPOINT },
+                  }, '*')
+                }}
+              >
+                Reset to production
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Endpoint indicator */}
+      <div className="endpoint-indicator">
+        {endpointUrl === DEFAULT_ENDPOINT ? (
+          <span className="endpoint-dot endpoint-dot--prod" />
+        ) : (
+          <span className="endpoint-dot endpoint-dot--custom" />
+        )}
+        <span className="endpoint-label">
+          {endpointUrl === DEFAULT_ENDPOINT ? 'basalt.run' : endpointUrl.replace(/^https?:\/\//, '').split('/')[0]}
+        </span>
+      </div>
+
       <button
         type="button"
         onClick={handleExport}
-        disabled={status === 'loading'}
+        disabled={status === 'loading' || totalItems === 0}
         className="primary-button"
       >
-        {status === 'loading' ? 'Exporting…' : 'Export tokens'}
+        {status === 'loading' ? 'Exporting...' : `Export to Basalt (${totalItems} items)`}
       </button>
 
       {status === 'success' && (
         <p className="status status--success">
-          <span>✓</span> {message}
+          <span>&#10003;</span> {message}
         </p>
       )}
       {status === 'error' && (
         <p className="status status--error">
-          <span>✗</span>{' '}
+          <span>&#10007;</span>{' '}
           {typeof message === 'string' ? message : JSON.stringify(message)}
         </p>
       )}

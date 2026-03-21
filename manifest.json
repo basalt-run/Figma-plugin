@@ -7,7 +7,7 @@
   "editorType": ["figma"],
   "permissions": ["currentuser"],
   "networkAccess": {
-    "allowedDomains": ["https://basalt.run"],
-    "reasoning": "Plugin exports design tokens to Basalt API at basalt.run."
+    "allowedDomains": ["https://basalt.run", "http://localhost:3000", "http://localhost:3001"],
+    "reasoning": "Plugin exports design system to Basalt API (basalt.run for production, localhost for development)."
   }
 }
