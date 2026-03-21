@@ -326,3 +326,36 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.export-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #09090b;
+  border: 1px solid #27272a;
+}
+
+.export-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3f3f46;
+  border-top-color: #ea580c;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: export-spin 0.85s linear infinite;
+}
+
+@keyframes export-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.export-progress-text {
+  font-size: 11px;
+  color: #a1a1aa;
+  line-height: 1.35;
+}

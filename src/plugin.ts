@@ -27,6 +27,8 @@ interface ExportedVariant {
   tokensUsed: Record<string, string[]>
   tokenBindings: TokenCssBinding[]
   description: string
+  /** Preview for this variant (component sets only) */
+  thumbnail?: string
 }
 
 interface ExportedIcon {
@@ -185,6 +187,16 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return parts.join('')
 }
 
+/** True if this node sits under a Component Set (variant def or nested comp inside a variant). */
+function isUnderComponentSet(node: BaseNode): boolean {
+  let p: BaseNode | null = node.parent
+  while (p) {
+    if (p.type === 'COMPONENT_SET') return true
+    p = p.parent
+  }
+  return false
+}
+
 async function exportThumbnail(node: SceneNode): Promise<string | undefined> {
   try {
     const bytes = await node.exportAsync({
@@ -202,10 +214,12 @@ async function exportThumbnail(node: SceneNode): Promise<string | undefined> {
 
 async function extractComponents(): Promise<ExportedComponent[]> {
   const results: ExportedComponent[] = []
+  // COMPONENT nodes nested inside a variant (e.g. icon inside a button) have parent type
+  // COMPONENT, not COMPONENT_SET — walk ancestors so we only treat true standalone roots.
   const allNodes = figma.root.findAll(
     (n) =>
       n.type === 'COMPONENT_SET' ||
-      (n.type === 'COMPONENT' && n.parent?.type !== 'COMPONENT_SET'),
+      (n.type === 'COMPONENT' && !isUnderComponentSet(n)),
   )
 
   for (const node of allNodes) {
@@ -238,6 +252,7 @@ async function extractComponentSet(set: ComponentSetNode): Promise<ExportedCompo
       }
     }
     const { categories, cssBindings } = getTokenBindings(comp)
+    const variantThumb = await exportThumbnail(comp)
     variants.push({
       id: comp.id,
       name: Object.values(vProps).join('/') || comp.name,
@@ -245,6 +260,7 @@ async function extractComponentSet(set: ComponentSetNode): Promise<ExportedCompo
       tokensUsed: categories,
       tokenBindings: cssBindings,
       description: comp.description || '',
+      thumbnail: variantThumb,
     })
   }
 
@@ -587,7 +603,7 @@ function scanComponentCounts(): { count: number; variantCount: number; component
   const allNodes = figma.root.findAll(
     (n) =>
       n.type === 'COMPONENT_SET' ||
-      (n.type === 'COMPONENT' && n.parent?.type !== 'COMPONENT_SET'),
+      (n.type === 'COMPONENT' && !isUnderComponentSet(n)),
   )
   const components: { name: string; variantCount: number }[] = []
   let totalVariants = 0

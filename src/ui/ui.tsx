@@ -58,16 +58,6 @@ function App() {
     parent.postMessage({ pluginMessage: { type: 'scan' } }, '*')
   }, [])
 
-  // Timeout fallback — if loading for >90s, show error so user isn't stuck
-  useEffect(() => {
-    if (status !== 'loading') return
-    const t = setTimeout(() => {
-      setStatus('error')
-      setMessage('Export timed out. Try again with fewer components, or check your network connection.')
-    }, 90000)
-    return () => clearTimeout(t)
-  }, [status])
-
   // Message handler — stable listener, reads endpointUrl from ref
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
@@ -97,6 +87,7 @@ function App() {
           apiKey, repo, filePath, mergeStrategy: strategy, commitMessage,
         } = msg
         setStatus('loading')
+        setMessage('Starting export…')
 
         const payload = {
           tokens,
@@ -118,8 +109,22 @@ function App() {
           },
         }
 
+        const applySuccessFromResult = (data: { imported?: { tokens?: number; components?: number; variants?: number; icons?: number; thumbnails?: number } }) => {
+          setStatus('success')
+          const imp = data?.imported
+          if (imp) {
+            const thumbs = imp.thumbnails ?? 0
+            setMessage(
+              `${imp.tokens ?? 0} tokens, ${imp.components ?? 0} components, ${imp.variants ?? 0} variants, ${imp.icons ?? 0} icons${thumbs > 0 ? `, ${thumbs} thumbnails` : ''} exported`,
+            )
+          } else {
+            setMessage('Design system exported successfully')
+          }
+        }
+
         try {
-          const res = await fetch(endpointUrlRef.current, {
+          const exportUrl = endpointUrlRef.current.replace(/\/?$/, '')
+          const res = await fetch(exportUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -128,18 +133,71 @@ function App() {
             body: JSON.stringify(payload),
           })
           const data = await res.json().catch(() => ({}))
-          if (res.ok) {
-            setStatus('success')
-            const imp = data?.imported
-            if (imp) {
-              const thumbs = imp.thumbnails ?? 0
-              setMessage(
-                `${imp.tokens ?? 0} tokens, ${imp.components ?? 0} components, ${imp.variants ?? 0} variants, ${imp.icons ?? 0} icons${thumbs > 0 ? `, ${thumbs} thumbnails` : ''} exported`,
-              )
-            } else {
-              setMessage('Design system exported successfully')
+
+          if (res.status === 202 && !data?.jobId) {
+            setStatus('error')
+            setMessage(typeof data?.error === 'string' ? data.error : 'Export started but no job id was returned.')
+            return
+          }
+
+          if (res.status === 202 && data?.jobId) {
+            const statusUrl = `${exportUrl.replace(/\/export\/?$/, '')}/export/status?jobId=${encodeURIComponent(data.jobId)}`
+            setMessage('Exporting tokens to GitHub…')
+
+            for (let attempt = 0; attempt < 60; attempt++) {
+              await new Promise((r) => setTimeout(r, 5000))
+              setMessage(`Exporting tokens to GitHub… (${attempt + 1}/60)`)
+
+              const statusRes = await fetch(statusUrl, {
+                headers: { Authorization: `Bearer ${apiKey}` },
+              })
+              const j = await statusRes.json().catch(() => ({}))
+
+              if (!statusRes.ok) {
+                setStatus('error')
+                const raw = j?.error ?? j?.message
+                setMessage(typeof raw === 'string' ? raw : `Status check failed (${statusRes.status})`)
+                return
+              }
+
+              if (j.status === 'done') {
+                if (j.result) {
+                  applySuccessFromResult(j.result)
+                } else {
+                  setStatus('success')
+                  setMessage('Design system exported successfully')
+                }
+                return
+              }
+              if (j.status === 'error') {
+                setStatus('error')
+                const errText = typeof j.error === 'string' ? j.error : 'Export failed'
+                if (errText.includes('Not Found') || errText.includes('repo')) {
+                  setMessage(`Repo not found. Create "${repo}" on GitHub first, then export again.`)
+                } else {
+                  setMessage(errText)
+                }
+                return
+              }
             }
-          } else {
+
+            setStatus('error')
+            setMessage('Export is taking longer than expected. Check the Basalt dashboard.')
+            return
+          }
+
+          if (res.ok && (data?.success || data?.imported)) {
+            applySuccessFromResult(data)
+            return
+          }
+
+          if (res.ok) {
+            setStatus('error')
+            setMessage(typeof data?.error === 'string' ? data.error : 'Unexpected response from export server.')
+            return
+          }
+
+          if (!res.ok) {
             setStatus('error')
             const raw = data?.error ?? data?.message
             const errMsg = typeof raw === 'string' ? raw : raw != null ? JSON.stringify(raw) : `Export failed (${res.status})`
@@ -356,7 +414,7 @@ function App() {
               onFocus={(e) => e.target.select()}
             />
             <p className="field-hint">
-              Default: basalt.run. Use http://localhost:3001/api/figma/plugin/export for local dev.
+              Default: basalt.run. Use http://localhost:3000/api/figma/plugin/export for local dev.
             </p>
             {endpointUrl !== DEFAULT_ENDPOINT && (
               <button
@@ -388,6 +446,13 @@ function App() {
           {endpointUrl === DEFAULT_ENDPOINT ? 'basalt.run' : endpointUrl.replace(/^https?:\/\//, '').split('/')[0]}
         </span>
       </div>
+
+      {status === 'loading' && (
+        <div className="export-progress" role="status">
+          <span className="export-spinner" aria-hidden />
+          <span className="export-progress-text">{message || 'Exporting…'}</span>
+        </div>
+      )}
 
       <button
         type="button"
