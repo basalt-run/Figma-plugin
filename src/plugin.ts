@@ -148,12 +148,13 @@ function figmaCollectionKey(collection: VariableCollection): string {
   return `${slug}_${idPart}`.replace(/_+/g, '_')
 }
 
-function isModeMapLeaf(o: unknown): boolean {
+/** True when object is a map of Figma mode name → DTCG leaf (not e.g. stone → 100, 200). */
+function isModeMapLeafPlugin(o: unknown, knownModeNames: Set<string>): boolean {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return false
   const node = o as Record<string, unknown>
   const keys = Object.keys(node).filter((k) => !k.startsWith('$'))
   if (keys.length === 0) return false
-  return keys.every((k) => {
+  const everyDtcg = keys.every((k) => {
     const v = node[k]
     return (
       v !== null &&
@@ -163,6 +164,16 @@ function isModeMapLeaf(o: unknown): boolean {
       '$value' in (v as object)
     )
   })
+  if (!everyDtcg) return false
+  if (knownModeNames.size > 0) {
+    return keys.every((k) => knownModeNames.has(k))
+  }
+  const looksLikeTokenPathSegmentKey = (k: string) =>
+    /^[0-9]+$/.test(k) ||
+    /^(xs|sm|md|lg|xl|2xl|3xl|4xl|5xl|6xl)$/i.test(k) ||
+    /^[0-9]+(\.[0-9]+)?(px|rem)$/i.test(k)
+  if (keys.every(looksLikeTokenPathSegmentKey)) return false
+  return true
 }
 
 function extractTokens(): {
@@ -188,6 +199,7 @@ function extractTokens(): {
 
     const collKey = figmaCollectionKey(collection)
     const collRoot: Record<string, unknown> = {}
+    const knownModeNames = new Set(modes.map((m) => m.name))
 
     for (const variableId of collection.variableIds) {
       const variable = figma.variables.getVariableById(variableId)
@@ -203,7 +215,7 @@ function extractTokens(): {
       if (Object.keys(byMode).length === 0) continue
 
       const path = variable.name.replace(/\//g, '.')
-      setNested(collRoot, path, byMode)
+      setNested(collRoot, path, byMode, knownModeNames)
     }
 
     if (Object.keys(collRoot).length > 0) {
@@ -904,6 +916,7 @@ function setNested(
   obj: Record<string, unknown>,
   path: string,
   value: unknown,
+  knownModeNames: Set<string>,
 ): void {
   const parts = path.split('.').filter(Boolean)
   if (parts.length === 0) return
@@ -913,7 +926,8 @@ function setNested(
     const isLeafNode =
       existing &&
       typeof existing === 'object' &&
-      ('$value' in (existing as Record<string, unknown>) || isModeMapLeaf(existing))
+      ('$value' in (existing as Record<string, unknown>) ||
+        isModeMapLeafPlugin(existing, knownModeNames))
     if (!existing || typeof existing !== 'object' || isLeafNode) {
       current[parts[i]] = {}
     }
@@ -924,8 +938,8 @@ function setNested(
   if (
     existingLast &&
     typeof existingLast === 'object' &&
-    isModeMapLeaf(existingLast) &&
-    isModeMapLeaf(value)
+    isModeMapLeafPlugin(existingLast, knownModeNames) &&
+    isModeMapLeafPlugin(value, knownModeNames)
   ) {
     current[lastKey] = { ...(existingLast as Record<string, unknown>), ...(value as Record<string, unknown>) }
     return
