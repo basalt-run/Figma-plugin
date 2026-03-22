@@ -94,7 +94,7 @@ figma.ui.onmessage = async (msg) => {
     const { apiKey, repo, filePath, mergeStrategy, commitMessage } = msg
 
     try {
-      const tokens = extractTokens()
+      const { tokens, variableCollections, primaryExportMode } = extractTokens()
       const components = await extractComponents()
       const icons = extractIcons()
       const shadows = extractShadows()
@@ -104,6 +104,8 @@ figma.ui.onmessage = async (msg) => {
         figmaFileId: figma.root.id,
         figmaFileName: figma.root.name,
         exportedAt: new Date().toISOString(),
+        variableCollections,
+        primaryExportMode,
       }
 
       figma.ui.postMessage({
@@ -135,28 +137,81 @@ figma.ui.onmessage = async (msg) => {
 
 // ── Token extraction (existing logic, refactored) ──────────────────────
 
-function extractTokens(): Record<string, unknown> {
+/** Stable JSON key per Figma variable collection (avoids name collisions). */
+function figmaCollectionKey(collection: VariableCollection): string {
+  const slug =
+    collection.name
+      .trim()
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_|_$/g, '') || 'collection'
+  const idPart = collection.id.includes(':') ? collection.id.split(':').pop()! : collection.id
+  return `${slug}_${idPart}`.replace(/_+/g, '_')
+}
+
+function isModeMapLeaf(o: unknown): boolean {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return false
+  const node = o as Record<string, unknown>
+  const keys = Object.keys(node).filter((k) => !k.startsWith('$'))
+  if (keys.length === 0) return false
+  return keys.every((k) => {
+    const v = node[k]
+    return (
+      v !== null &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      '$type' in (v as object) &&
+      '$value' in (v as object)
+    )
+  })
+}
+
+function extractTokens(): {
+  tokens: Record<string, unknown>
+  variableCollections: { name: string; modes: { modeId: string; name: string }[] }[]
+  primaryExportMode: string | null
+} {
   const collections = figma.variables.getLocalVariableCollections()
   const output: Record<string, unknown> = {}
+  const variableCollections: { name: string; modes: { modeId: string; name: string }[] } = []
+
+  let primaryExportMode: string | null = null
 
   for (const collection of collections) {
-    const mode = collection.modes[0]
-    if (!mode) continue
+    const modes = collection.modes
+    if (modes.length === 0) continue
+
+    variableCollections.push({
+      name: collection.name,
+      modes: modes.map((m) => ({ modeId: m.modeId, name: m.name })),
+    })
+    if (primaryExportMode === null) primaryExportMode = modes[0].name
+
+    const collKey = figmaCollectionKey(collection)
+    const collRoot: Record<string, unknown> = {}
 
     for (const variableId of collection.variableIds) {
       const variable = figma.variables.getVariableById(variableId)
       if (!variable) continue
 
-      const raw = variable.valuesByMode[mode.modeId]
-      const { value, type } = resolveValue(raw, variable.resolvedType, collections, new Set())
-      if (value === null) continue
+      const byMode: Record<string, unknown> = {}
+      for (const mode of modes) {
+        const raw = variable.valuesByMode[mode.modeId]
+        const { value, type } = resolveValue(raw, variable.resolvedType, collections, new Set())
+        if (value === null) continue
+        byMode[mode.name] = { $type: type, $value: value }
+      }
+      if (Object.keys(byMode).length === 0) continue
 
       const path = variable.name.replace(/\//g, '.')
-      setNested(output, path, { $type: type, $value: value })
+      setNested(collRoot, path, byMode)
+    }
+
+    if (Object.keys(collRoot).length > 0) {
+      output[collKey] = collRoot
     }
   }
 
-  return output
+  return { tokens: output, variableCollections, primaryExportMode }
 }
 
 // ── Component extraction ───────────────────────────────────────────────
@@ -855,14 +910,25 @@ function setNested(
   let current = obj
   for (let i = 0; i < parts.length - 1; i++) {
     const existing = current[parts[i]]
-    if (
-      !existing ||
-      typeof existing !== 'object' ||
-      '$value' in (existing as Record<string, unknown>)
-    ) {
+    const isLeafNode =
+      existing &&
+      typeof existing === 'object' &&
+      ('$value' in (existing as Record<string, unknown>) || isModeMapLeaf(existing))
+    if (!existing || typeof existing !== 'object' || isLeafNode) {
       current[parts[i]] = {}
     }
     current = current[parts[i]] as Record<string, unknown>
   }
-  current[parts[parts.length - 1]] = value
+  const lastKey = parts[parts.length - 1]
+  const existingLast = current[lastKey]
+  if (
+    existingLast &&
+    typeof existingLast === 'object' &&
+    isModeMapLeaf(existingLast) &&
+    isModeMapLeaf(value)
+  ) {
+    current[lastKey] = { ...(existingLast as Record<string, unknown>), ...(value as Record<string, unknown>) }
+    return
+  }
+  current[lastKey] = value
 }
