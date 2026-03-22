@@ -197,6 +197,110 @@ function isUnderComponentSet(node: BaseNode): boolean {
   return false
 }
 
+/**
+ * Slash-name heuristic (bootstrap / non–component-set masters):
+ * Group when any path segment contains `=`. Otherwise keep full name as standalone.
+ * e.g. `Icons/Arrow` → standalone; `Alert/Variant=Danger` → base `Alert`.
+ */
+function parseComponentName(name: string): { baseName: string; variantProps: Record<string, string> } {
+  const parts = name.split('/')
+  const variantParts = parts.filter((p) => p.includes('='))
+
+  if (variantParts.length === 0) {
+    return { baseName: name, variantProps: {} }
+  }
+
+  const firstVariantIndex = parts.findIndex((p) => p.includes('='))
+  const baseName = parts.slice(0, firstVariantIndex).join('/')
+
+  const variantProps: Record<string, string> = {}
+  for (const part of variantParts) {
+    const idx = part.indexOf('=')
+    if (idx === -1) continue
+    const key = part.slice(0, idx).trim()
+    const value = part.slice(idx + 1).trim()
+    if (key && value) variantProps[key] = value
+  }
+
+  return { baseName: baseName || name, variantProps }
+}
+
+interface RawStandaloneEntry {
+  id: string
+  name: string
+  description: string
+  figmaComponentKey: string
+  tokensUsed: Record<string, string[]>
+  tokenBindings: TokenCssBinding[]
+  thumbnail?: string
+  hasIcon: boolean
+  hasLabel: boolean
+}
+
+function inferVariantAxesFromVariants(variants: ExportedVariant[]): string[] {
+  const keys = new Set<string>()
+  for (const v of variants) {
+    for (const k of Object.keys(v.variantProperties ?? {})) {
+      keys.add(k)
+    }
+  }
+  return [...keys]
+}
+
+/** Merge standalone COMPONENT masters that share a slash + `=` base name (e.g. Basalt bootstrap). */
+function groupStandaloneBySlashName(entries: RawStandaloneEntry[]): ExportedComponent[] {
+  const groups = new Map<
+    string,
+    { baseName: string; first: RawStandaloneEntry; variants: ExportedVariant[] }
+  >()
+
+  for (const comp of entries) {
+    const { baseName, variantProps } = parseComponentName(comp.name)
+    if (!groups.has(baseName)) {
+      groups.set(baseName, { baseName, first: comp, variants: [] })
+    }
+    const g = groups.get(baseName)!
+    g.variants.push({
+      id: comp.id,
+      name: comp.name,
+      variantProperties: variantProps,
+      tokensUsed: comp.tokensUsed,
+      tokenBindings: comp.tokenBindings,
+      description: comp.description,
+      thumbnail: comp.thumbnail,
+    })
+  }
+
+  return Array.from(groups.values()).map((g) => ({
+    id: g.first.id,
+    name: g.baseName,
+    description: g.first.description,
+    figmaComponentKey: g.first.figmaComponentKey,
+    category: guessCategory(g.baseName),
+    variants: g.variants,
+    variantProperties: inferVariantAxesFromVariants(g.variants),
+    hasIcon: g.first.hasIcon,
+    hasLabel: g.first.hasLabel,
+    thumbnail: g.variants[0]?.thumbnail ?? g.first.thumbnail,
+  }))
+}
+
+async function buildRawStandaloneEntry(comp: ComponentNode): Promise<RawStandaloneEntry> {
+  const { categories, cssBindings } = getTokenBindings(comp)
+  const thumbnail = await exportThumbnail(comp)
+  return {
+    id: comp.id,
+    name: comp.name,
+    description: comp.description || '',
+    figmaComponentKey: comp.key,
+    tokensUsed: categories,
+    tokenBindings: cssBindings,
+    thumbnail,
+    hasIcon: detectHasIcon(comp),
+    hasLabel: detectHasLabel(comp),
+  }
+}
+
 async function exportThumbnail(node: SceneNode): Promise<string | undefined> {
   try {
     const bytes = await node.exportAsync({
@@ -214,22 +318,23 @@ async function exportThumbnail(node: SceneNode): Promise<string | undefined> {
 
 async function extractComponents(): Promise<ExportedComponent[]> {
   const results: ExportedComponent[] = []
-  // COMPONENT nodes nested inside a variant (e.g. icon inside a button) have parent type
-  // COMPONENT, not COMPONENT_SET — walk ancestors so we only treat true standalone roots.
-  const allNodes = figma.root.findAll(
-    (n) =>
-      n.type === 'COMPONENT_SET' ||
-      (n.type === 'COMPONENT' && !isUnderComponentSet(n)),
-  )
+  // 1) Native Figma component sets (Combine as variants).
+  const componentSets = figma.root.findAll((n) => n.type === 'COMPONENT_SET') as ComponentSetNode[]
+  // 2) Standalone COMPONENT masters (bootstrap: slash + `=` names grouped by parseComponentName).
+  const standaloneComponents = figma.root.findAll(
+    (n) => n.type === 'COMPONENT' && !isUnderComponentSet(n),
+  ) as ComponentNode[]
 
-  for (const node of allNodes) {
-    if (node.type === 'COMPONENT_SET') {
-      results.push(await extractComponentSet(node as ComponentSetNode))
-    } else if (node.type === 'COMPONENT') {
-      if (isIconComponent(node as ComponentNode)) continue
-      results.push(await extractStandaloneComponent(node as ComponentNode))
-    }
+  for (const set of componentSets) {
+    results.push(await extractComponentSet(set))
   }
+
+  const rawStandalone: RawStandaloneEntry[] = []
+  for (const comp of standaloneComponents) {
+    if (isIconComponent(comp)) continue
+    rawStandalone.push(await buildRawStandaloneEntry(comp))
+  }
+  results.push(...groupStandaloneBySlashName(rawStandalone))
 
   return results
 }
@@ -253,9 +358,10 @@ async function extractComponentSet(set: ComponentSetNode): Promise<ExportedCompo
     }
     const { categories, cssBindings } = getTokenBindings(comp)
     const variantThumb = await exportThumbnail(comp)
+    // Use Figma layer name (unique per variant) for stable DB keys; display labels come from variantProperties
     variants.push({
       id: comp.id,
-      name: Object.values(vProps).join('/') || comp.name,
+      name: comp.name,
       variantProperties: vProps,
       tokensUsed: categories,
       tokenBindings: cssBindings,
@@ -277,32 +383,6 @@ async function extractComponentSet(set: ComponentSetNode): Promise<ExportedCompo
     variantProperties: variantAxes,
     hasIcon: detectHasIcon(set),
     hasLabel: detectHasLabel(set),
-    thumbnail,
-  }
-}
-
-async function extractStandaloneComponent(comp: ComponentNode): Promise<ExportedComponent> {
-  const { categories, cssBindings } = getTokenBindings(comp)
-  const thumbnail = await exportThumbnail(comp)
-  return {
-    id: comp.id,
-    name: comp.name,
-    description: comp.description || '',
-    figmaComponentKey: comp.key,
-    category: guessCategory(comp.name),
-    variants: [
-      {
-        id: comp.id,
-        name: 'default',
-        variantProperties: {},
-        tokensUsed: categories,
-        tokenBindings: cssBindings,
-        description: comp.description || '',
-      },
-    ],
-    variantProperties: [],
-    hasIcon: detectHasIcon(comp),
-    hasLabel: detectHasLabel(comp),
     thumbnail,
   }
 }
@@ -600,23 +680,28 @@ function formatLetterSpacing(ls: LetterSpacing): string {
 // ── Document scan (lightweight analysis without exporting) ─────────────
 
 function scanComponentCounts(): { count: number; variantCount: number; components: { name: string; variantCount: number }[] } {
-  const allNodes = figma.root.findAll(
-    (n) =>
-      n.type === 'COMPONENT_SET' ||
-      (n.type === 'COMPONENT' && !isUnderComponentSet(n)),
-  )
+  const componentSets = figma.root.findAll((n) => n.type === 'COMPONENT_SET') as ComponentSetNode[]
+  const standaloneComponents = figma.root.findAll(
+    (n) => n.type === 'COMPONENT' && !isUnderComponentSet(n),
+  ) as ComponentNode[]
+
   const components: { name: string; variantCount: number }[] = []
   let totalVariants = 0
-  for (const node of allNodes) {
-    if (node.type === 'COMPONENT_SET') {
-      const childCount = (node as ComponentSetNode).children.filter((c) => c.type === 'COMPONENT').length
-      components.push({ name: node.name, variantCount: childCount })
-      totalVariants += childCount
-    } else if (node.type === 'COMPONENT') {
-      if (isIconComponent(node as ComponentNode)) continue
-      components.push({ name: node.name, variantCount: 1 })
-      totalVariants += 1
-    }
+
+  for (const node of componentSets) {
+    const childCount = node.children.filter((c) => c.type === 'COMPONENT').length
+    components.push({ name: node.name, variantCount: childCount })
+    totalVariants += childCount
+  }
+  const slashGroups = new Map<string, number>()
+  for (const node of standaloneComponents) {
+    if (isIconComponent(node)) continue
+    const { baseName } = parseComponentName(node.name)
+    slashGroups.set(baseName, (slashGroups.get(baseName) ?? 0) + 1)
+  }
+  for (const [name, vc] of slashGroups) {
+    components.push({ name, variantCount: vc })
+    totalVariants += vc
   }
   return { count: components.length, variantCount: totalVariants, components }
 }
@@ -660,6 +745,53 @@ async function scanDocument(): Promise<ScanResult> {
 
 // ── Utilities ──────────────────────────────────────────────────────────
 
+const FONT_WEIGHT_NAME_MAP: Record<string, number> = {
+  thin: 100,
+  hairline: 100,
+  extralight: 200,
+  ultralight: 200,
+  light: 300,
+  regular: 400,
+  normal: 400,
+  book: 400,
+  medium: 500,
+  semibold: 600,
+  demibold: 600,
+  bold: 700,
+  extrabold: 800,
+  ultrabold: 800,
+  black: 900,
+  heavy: 900,
+}
+
+function mapFontWeightFromString(s: string): number | null {
+  const t = s.trim()
+  if (/^\d{2,3}$/.test(t)) {
+    const n = parseInt(t, 10)
+    if (n >= 100 && n <= 900) return n
+  }
+  const key = t.replace(/\s+/g, '').toLowerCase()
+  for (const [k, v] of Object.entries(FONT_WEIGHT_NAME_MAP)) {
+    if (key.includes(k)) return v
+  }
+  return null
+}
+
+function dtcgTypeForVariableResolvedType(rt: VariableResolvedDataType): string {
+  switch (rt) {
+    case 'COLOR':
+      return 'color'
+    case 'FLOAT':
+      return 'dimension'
+    case 'STRING':
+      return 'fontFamily'
+    case 'BOOLEAN':
+      return 'number'
+    default:
+      return 'unknown'
+  }
+}
+
 function resolveValue(
   raw: VariableValue,
   resolvedType: VariableResolvedDataType,
@@ -678,13 +810,10 @@ function resolveValue(
 
     const referencedVar = figma.variables.getVariableById(aliasId)
     if (referencedVar) {
-      const refCollection = collections.find((c) =>
-        c.variableIds.includes(referencedVar.id),
-      )
-      const refMode = refCollection?.modes[0]
-      if (refMode) {
-        const refRaw = referencedVar.valuesByMode[refMode.modeId]
-        return resolveValue(refRaw, referencedVar.resolvedType, collections, visited)
+      const dtcgPath = referencedVar.name.replace(/\//g, '.')
+      return {
+        value: `{${dtcgPath}}`,
+        type: dtcgTypeForVariableResolvedType(referencedVar.resolvedType),
       }
     }
     return { value: null, type: 'unknown' }
@@ -696,11 +825,13 @@ function resolveValue(
   if (resolvedType === 'FLOAT') {
     return { value: `${raw}px`, type: 'dimension' }
   }
-  if (resolvedType === 'STRING') {
+  if (resolvedType === 'STRING' && typeof raw === 'string') {
+    const w = mapFontWeightFromString(raw)
+    if (w != null) return { value: w, type: 'fontWeight' }
     return { value: raw, type: 'fontFamily' }
   }
   if (resolvedType === 'BOOLEAN') {
-    return { value: raw, type: 'boolean' }
+    return { value: raw ? 1 : 0, type: 'number' }
   }
   return { value: raw, type: 'unknown' }
 }
