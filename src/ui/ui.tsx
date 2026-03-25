@@ -375,6 +375,11 @@ function App() {
             key={opt}
             type="button"
             onClick={() => setMergeStrategy(opt)}
+            title={
+              opt === 'overwrite'
+                ? 'Replaces all tokens in Basalt with the current Figma file. Use after renaming or restructuring variables to clear stale rows.'
+                : 'Merges with existing tokens and GitHub file.'
+            }
             className={
               'toggle-button' + (mergeStrategy === opt ? ' toggle-button--active' : '')
             }
@@ -383,6 +388,10 @@ function App() {
           </button>
         ))}
       </div>
+      <p className="field-hint" style={{ marginTop: 6 }}>
+        <strong>Overwrite</strong> replaces all tokens in Basalt with the current file. Use it to clean up
+        after renaming or restructuring Figma variables (removes stale rows in one export).
+      </p>
 
       {/* Advanced settings */}
       <div className="settings-section">

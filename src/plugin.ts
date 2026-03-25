@@ -137,17 +137,6 @@ figma.ui.onmessage = async (msg) => {
 
 // ── Token extraction (existing logic, refactored) ──────────────────────
 
-/** Stable JSON key per Figma variable collection (avoids name collisions). */
-function figmaCollectionKey(collection: VariableCollection): string {
-  const slug =
-    collection.name
-      .trim()
-      .replace(/[^a-zA-Z0-9]+/g, '_')
-      .replace(/^_|_$/g, '') || 'collection'
-  const idPart = collection.id.includes(':') ? collection.id.split(':').pop()! : collection.id
-  return `${slug}_${idPart}`.replace(/_+/g, '_')
-}
-
 /** True when object is a map of Figma mode name → DTCG leaf (not e.g. stone → 100, 200). */
 function isModeMapLeafPlugin(o: unknown, knownModeNames: Set<string>): boolean {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return false
@@ -197,8 +186,6 @@ function extractTokens(): {
     })
     if (primaryExportMode === null) primaryExportMode = modes[0].name
 
-    const collKey = figmaCollectionKey(collection)
-    const collRoot: Record<string, unknown> = {}
     const knownModeNames = new Set(modes.map((m) => m.name))
 
     for (const variableId of collection.variableIds) {
@@ -215,11 +202,8 @@ function extractTokens(): {
       if (Object.keys(byMode).length === 0) continue
 
       const path = variable.name.replace(/\//g, '.')
-      setNested(collRoot, path, byMode, knownModeNames)
-    }
-
-    if (Object.keys(collRoot).length > 0) {
-      output[collKey] = collRoot
+      // Single tree for the file: variable paths only (no collection key prefix). Same path in two collections → last wins.
+      setNested(output, path, byMode, knownModeNames)
     }
   }
 
