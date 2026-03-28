@@ -63,6 +63,12 @@ input {
   color: #78716c;
 }
 
+.field-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  word-break: break-all;
+}
+
 .field-input {
   width: 100%;
   box-sizing: border-box;

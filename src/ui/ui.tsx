@@ -38,6 +38,12 @@ function App() {
   const [showIcons, setShowIcons] = useState(false)
   const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT)
   const [showSettings, setShowSettings] = useState(false)
+  const [importFilterSummary, setImportFilterSummary] = useState<{
+    excluded: { name: string; reason: string }[]
+  } | null>(null)
+  const [exportWarnings, setExportWarnings] = useState<string[]>([])
+  const [exportHint, setExportHint] = useState<string | null>(null)
+  const [filterCounts, setFilterCounts] = useState<{ raw: number; kept: number } | null>(null)
   const endpointUrlRef = useRef(endpointUrl)
   endpointUrlRef.current = endpointUrl
 
@@ -88,6 +94,10 @@ function App() {
         } = msg
         setStatus('loading')
         setMessage('Starting export…')
+        setImportFilterSummary(null)
+        setExportWarnings([])
+        setExportHint(null)
+        setFilterCounts(null)
 
         const payload = {
           tokens,
@@ -109,14 +119,47 @@ function App() {
           },
         }
 
-        const applySuccessFromResult = (data: { imported?: { tokens?: number; components?: number; variants?: number; icons?: number; thumbnails?: number } }) => {
+        const applySuccessFromResult = (
+          data: {
+            imported?: { tokens?: number; components?: number; variants?: number; icons?: number; thumbnails?: number }
+            figmaImportFilter?: {
+              excluded?: { name: string; reason: string }[]
+              rawCount?: number
+              includedCount?: number
+            }
+            warnings?: string[]
+            hint?: string
+          },
+          sentSummary?: { totalComponents?: number },
+        ) => {
           setStatus('success')
+          setExportWarnings(Array.isArray(data.warnings) ? data.warnings : [])
+          setExportHint(typeof data.hint === 'string' && data.hint ? data.hint : null)
+          const fi = data?.figmaImportFilter
+          if (fi && typeof fi.rawCount === 'number') {
+            setFilterCounts({ raw: fi.rawCount, kept: fi.includedCount ?? 0 })
+          } else {
+            setFilterCounts(null)
+          }
+          const excluded = data?.figmaImportFilter?.excluded
+          if (excluded && excluded.length > 0) {
+            setImportFilterSummary({ excluded })
+          } else {
+            setImportFilterSummary(null)
+          }
           const imp = data?.imported
           if (imp) {
             const thumbs = imp.thumbnails ?? 0
             setMessage(
               `${imp.tokens ?? 0} tokens, ${imp.components ?? 0} components, ${imp.variants ?? 0} variants, ${imp.icons ?? 0} icons${thumbs > 0 ? `, ${thumbs} thumbnails` : ''} exported`,
             )
+            const sentComp = sentSummary?.totalComponents ?? 0
+            if (sentComp > 0 && (imp.components ?? 0) === 0) {
+              setExportWarnings((w) => [
+                `Figma sent ${sentComp} component(s) but the server saved 0. Open Vercel/runtime logs and search for [figma-export] and [figma-import].`,
+                ...w,
+              ])
+            }
           } else {
             setMessage('Design system exported successfully')
           }
@@ -162,7 +205,7 @@ function App() {
 
               if (j.status === 'done') {
                 if (j.result) {
-                  applySuccessFromResult(j.result)
+                  applySuccessFromResult(j.result, payload.summary)
                 } else {
                   setStatus('success')
                   setMessage('Design system exported successfully')
@@ -187,7 +230,7 @@ function App() {
           }
 
           if (res.ok && (data?.success || data?.imported)) {
-            applySuccessFromResult(data)
+            applySuccessFromResult(data, payload.summary)
             return
           }
 
@@ -423,7 +466,8 @@ function App() {
               onFocus={(e) => e.target.select()}
             />
             <p className="field-hint">
-              Default: basalt.run. Use http://localhost:3000/api/figma/plugin/export for local dev.
+              Default: basalt.run. For local dev use your dev origin + <code>/api/figma/plugin/export</code> (e.g.{' '}
+              <code>http://localhost:3000/...</code> or <code>http://ja-air.local:3000/...</code>).
             </p>
             {endpointUrl !== DEFAULT_ENDPOINT && (
               <button
@@ -473,9 +517,51 @@ function App() {
       </button>
 
       {status === 'success' && (
-        <p className="status status--success">
-          <span>&#10003;</span> {message}
-        </p>
+        <div className="status status--success">
+          <p>
+            <span>&#10003;</span> {message}
+          </p>
+          {filterCounts && (
+            <p className="muted" style={{ marginTop: 6, fontSize: 11, textAlign: 'left', opacity: 0.9 }}>
+              Server filter: {filterCounts.kept} of {filterCounts.raw} Figma components kept for import
+            </p>
+          )}
+          {exportHint && (
+            <p style={{ marginTop: 6, fontSize: 11, textAlign: 'left', opacity: 0.9 }}>{exportHint}</p>
+          )}
+          {exportWarnings.length > 0 && (
+            <details style={{ marginTop: 8, textAlign: 'left', fontSize: 11 }}>
+              <summary style={{ cursor: 'pointer', opacity: 0.85 }}>Server warnings ({exportWarnings.length})</summary>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 16, maxHeight: 140, overflowY: 'auto', opacity: 0.9 }}>
+                {exportWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {importFilterSummary && importFilterSummary.excluded.length > 0 && (
+            <details style={{ marginTop: 8, textAlign: 'left', fontSize: 11 }}>
+              <summary style={{ cursor: 'pointer', opacity: 0.85 }}>
+                {importFilterSummary.excluded.length} internal elements filtered out
+              </summary>
+              <ul
+                style={{
+                  margin: '6px 0 0',
+                  paddingLeft: 16,
+                  maxHeight: 160,
+                  overflowY: 'auto',
+                  opacity: 0.9,
+                }}
+              >
+                {importFilterSummary.excluded.map((row, i) => (
+                  <li key={`${i}-${row.name}`}>
+                    {row.name} — {row.reason}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
       )}
       {status === 'error' && (
         <p className="status status--error">
