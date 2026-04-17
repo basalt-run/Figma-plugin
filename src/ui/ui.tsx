@@ -11,6 +11,7 @@ interface ScanResult {
   dimensionCount: number
   componentCount: number
   variantCount: number
+  registryComponentCount: number
   iconCount: number
   shadowCount: number
   typographyCount: number
@@ -89,8 +90,18 @@ function App() {
 
       if (msg.type === 'do-export') {
         const {
-          tokens, components, icons, shadows, typography, metadata,
-          apiKey, repo, filePath, mergeStrategy: strategy, commitMessage,
+          tokens,
+          components,
+          figmaRegistryComponents,
+          icons,
+          shadows,
+          typography,
+          metadata,
+          apiKey,
+          repo,
+          filePath,
+          mergeStrategy: strategy,
+          commitMessage,
         } = msg
         setStatus('loading')
         setMessage('Starting export…')
@@ -102,6 +113,7 @@ function App() {
         const payload = {
           tokens,
           components,
+          figmaRegistryComponents: Array.isArray(figmaRegistryComponents) ? figmaRegistryComponents : [],
           icons,
           shadows,
           typography,
@@ -317,6 +329,11 @@ function App() {
               <span className="analysis-count">{scan.componentCount}</span>
               <span className="analysis-label">Components</span>
               <span className="analysis-detail">{scan.variantCount} variants</span>
+              {scan.registryComponentCount > 0 && (
+                <span className="analysis-detail" style={{ display: 'block', marginTop: 4, opacity: 0.85 }}>
+                  {scan.registryComponentCount} for registry sync
+                </span>
+              )}
             </div>
             <div className="analysis-item">
               <span className="analysis-count">{scan.iconCount}</span>

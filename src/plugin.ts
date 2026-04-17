@@ -1,3 +1,5 @@
+import type { FigmaRegistryComponent } from './figma-registry-types'
+
 figma.showUI(__html__, { width: 400, height: 680 })
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -56,6 +58,8 @@ interface ScanResult {
   dimensionCount: number
   componentCount: number
   variantCount: number
+  /** Component sets + standalone components for Basalt registry (metadata-only extract). */
+  registryComponentCount: number
   iconCount: number
   shadowCount: number
   typographyCount: number
@@ -95,7 +99,9 @@ figma.ui.onmessage = async (msg) => {
 
     try {
       const { tokens, variableCollections, primaryExportMode } = extractTokens()
-      const components = await extractComponents()
+      figma.notify('Extracting components…', { timeout: 2000 })
+      const figmaRegistryComponents = extractFigmaRegistryComponents()
+      const components = await extractExportedComponents()
       const icons = extractIcons()
       const shadows = extractShadows()
       const typography = extractTypography()
@@ -112,6 +118,7 @@ figma.ui.onmessage = async (msg) => {
         type: 'do-export',
         tokens,
         components,
+        figmaRegistryComponents,
         icons,
         shadows,
         typography,
@@ -172,7 +179,7 @@ function extractTokens(): {
 } {
   const collections = figma.variables.getLocalVariableCollections()
   const output: Record<string, unknown> = {}
-  const variableCollections: { name: string; modes: { modeId: string; name: string }[] } = []
+  const variableCollections: { name: string; modes: { modeId: string; name: string }[] }[] = []
 
   let primaryExportMode: string | null = null
 
@@ -210,7 +217,66 @@ function extractTokens(): {
   return { tokens: output, variableCollections, primaryExportMode }
 }
 
-// ── Component extraction ───────────────────────────────────────────────
+// ── Registry component metadata (for Supabase / Haiku; no thumbnails) ──
+
+function extractFigmaRegistryComponents(): FigmaRegistryComponent[] {
+  const componentSets = figma.root.findAll((n) => n.type === 'COMPONENT_SET') as ComponentSetNode[]
+  const standaloneComponents = (
+    figma.root.findAll((n) => n.type === 'COMPONENT') as ComponentNode[]
+  ).filter((c) => c.parent?.type !== 'COMPONENT_SET')
+
+  const results: FigmaRegistryComponent[] = []
+
+  for (const set of componentSets) {
+    const propDefs = set.componentPropertyDefinitions ?? {}
+
+    const variants = set.children
+      .filter((child): child is ComponentNode => child.type === 'COMPONENT')
+      .map((variant) => {
+        const variantProps: Record<string, string> = {}
+        variant.name.split(',').forEach((pair) => {
+          const [k, ...rest] = pair.split('=').map((s) => s.trim())
+          const v = rest.join('=').trim()
+          if (k && v) variantProps[k] = v
+        })
+        return {
+          figmaNodeId: variant.id,
+          name: variant.name,
+          props: variantProps,
+        }
+      })
+
+    results.push({
+      figmaNodeId: set.id,
+      name: set.name,
+      description: set.description || undefined,
+      propertyDefinitions: Object.entries(propDefs).map(([key, def]) => ({
+        name: key.split('#')[0] ?? key,
+        type: def.type,
+        defaultValue: def.defaultValue,
+        variantOptions:
+          def.type === 'VARIANT' && 'variantOptions' in def
+            ? (def as { variantOptions?: string[] }).variantOptions
+            : undefined,
+      })),
+      variants,
+    })
+  }
+
+  for (const comp of standaloneComponents) {
+    results.push({
+      figmaNodeId: comp.id,
+      name: comp.name,
+      description: comp.description || undefined,
+      propertyDefinitions: [],
+      variants: [],
+    })
+  }
+
+  return results
+}
+
+// ── Component extraction (rich export: thumbnails, token bindings) ─────
 
 const THUMBNAIL_MAX_PX = 400
 
@@ -367,7 +433,7 @@ async function exportThumbnail(node: SceneNode): Promise<string | undefined> {
   }
 }
 
-async function extractComponents(): Promise<ExportedComponent[]> {
+async function extractExportedComponents(): Promise<ExportedComponent[]> {
   const results: ExportedComponent[] = []
   // 1) Native Figma component sets (Combine as variants).
   const componentSets = figma.root.findAll((n) => n.type === 'COMPONENT_SET') as ComponentSetNode[]
@@ -780,12 +846,15 @@ async function scanDocument(): Promise<ScanResult> {
   try { shadowCount = figma.getLocalEffectStyles().filter(s => s.effects.some(e => e.type === 'DROP_SHADOW')).length } catch {}
   try { typographyCount = figma.getLocalTextStyles().length } catch {}
 
+  const registryComponentCount = extractFigmaRegistryComponents().length
+
   return {
     tokenCount,
     colorCount,
     dimensionCount,
     componentCount: compScan.count,
     variantCount: compScan.variantCount,
+    registryComponentCount,
     iconCount: icons.length,
     shadowCount,
     typographyCount,
